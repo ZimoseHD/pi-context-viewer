@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pi Context Explorer</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div id="app">
+	<aside id="sidebar">
+		<div class="sidebar-header">
+			<h1>Pi Context Explorer</h1>
+			<button id="refresh-sessions" title="刷新会话列表">⟳</button>
+		</div>
+		<div id="session-list" class="session-list"></div>
+	</aside>
+	<main id="main">
+		<div id="timeline-pane">
+			<div class="pane-header">
+				<h2 id="timeline-title">时间线</h2>
+				<div id="session-meta" class="session-meta"></div>
+			</div>
+			<div id="timeline" class="timeline"></div>
+		</div>
+		<div id="viewer-pane">
+			<div class="pane-header viewer-toolbar">
+				<div class="mode-switch">
+					<button data-mode="view" class="active">Context</button>
+					<button data-mode="diff">Diff</button>
+					<button data-mode="payload">Payload</button>
+				</div>
+				<div id="diff-controls" class="diff-controls hidden">
+					<label>对比 <input type="number" id="diff-a" min="0" size="3"></label>
+					<span>→</span>
+					<label>本次 <input type="number" id="diff-b" min="0" size="3"></label>
+					<span id="diff-summary" class="diff-summary"></span>
+				</div>
+				<input type="search" id="search" placeholder="搜索上下文…" class="search-input">
+			</div>
+			<div id="viewer" class="viewer"></div>
+		</div>
+		<div id="detail-pane">
+			<div class="pane-header"><h2>来源 / Tokens</h2></div>
+			<div id="detail" class="detail"></div>
+		</div>
+	</main>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

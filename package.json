@@ -1,0 +1,30 @@
+{
+	"name": "pi-context-viewer",
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Pi extension: live web explorer for per-LLM-call context, diffs, and provenance",
+	"license": "MIT",
+	"keywords": ["pi-extension", "llm-observability"],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/ZimoseHD/pi-context-viewer.git"
+	},
+	"files": ["src/", "docs/", "README.md"],
+	"pi": {
+		"extensions": ["./src/index.ts"]
+	},
+	"scripts": {
+		"check": "tsc --noEmit"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "1.4.0",
+		"typescript": "^5.9.0",
+		"@types/node": "^24.0.0"
+	},
+	"engines": {
+		"node": ">=22"
+	}
+}
