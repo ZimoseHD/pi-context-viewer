@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
-import { callsFromRecords, listSessions, readTrace } from "./store.ts";
+import { callsFromRecords, listSessionHeaders, listSessions, readTrace } from "./store.ts";
 import { diffCalls } from "./diff.ts";
 
 const MIME: Record<string, string> = {
@@ -109,9 +109,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, url: URL, webDi
 		const toolCalls = records.flatMap((r) => (r.type === "tool_call_started" ? [r.call] : []));
 		const compactions = records.flatMap((r) => (r.type === "compaction" ? [r.compaction] : []));
 		// Subagent children: sessions whose trace header points at this one.
-		const children = listSessions()
+		// Header-only fast scan (first line of each file) to avoid re-reading
+		// every full trace on each request.
+		const children = listSessionHeaders()
 			.filter((s) => s.parentSessionId === sessionMatch[1])
-			.map((s) => ({ sessionId: s.sessionId, startedAt: s.startedAt, callCount: s.callCount, isSubagent: s.isSubagent }));
+			.map((s) => ({ sessionId: s.sessionId, startedAt: s.startedAt, isSubagent: s.isSubagent }));
 		return json(res, {
 			calls: calls.map((c) => ({
 				...c,
@@ -283,13 +285,19 @@ function buildInsights(records: import("./types.ts").TraceRecord[]): {
 	const toolCalls = records.flatMap((r) => (r.type === "tool_call_started" ? [r.call] : []));
 	const toolFinished = new Map(records.flatMap((r) => (r.type === "tool_call_finished" ? [[r.toolCallId, r] as const] : [])));
 
-	// 1. Duplicate tool calls by (toolName, path/command).
+	// 1. Duplicate tool calls by (toolName, full input). Pagination parameters
+	// (offset/limit) are part of the signature: paging through a file is not a
+	// duplicate read.
 	const seen = new Map<string, { toolName: string; signature: string; count: number; kind: string }>();
 	for (const tc of toolCalls) {
 		const input = tc.input as any;
-		const signature = typeof input?.path === "string" ? input.path : typeof input?.command === "string" ? input.command : JSON.stringify(tc.input);
+		const detail =
+			typeof input?.path === "string" ? input.path : typeof input?.command === "string" ? input.command : "";
+		const page = input?.offset != null || input?.limit != null ? ` @${input.offset ?? 0}+${input.limit ?? "∞"}` : "";
+		const signature = detail ? `${detail}${page}` : JSON.stringify(tc.input);
+		const kind = typeof input?.path === "string" ? "file" : typeof input?.command === "string" ? "command" : "other";
 		const key = `${tc.toolName}:${signature}`;
-		const entry = seen.get(key) ?? { toolName: tc.toolName, signature, count: 0, kind: typeof input?.path === "string" ? "file" : "command" };
+		const entry = seen.get(key) ?? { toolName: tc.toolName, signature, count: 0, kind };
 		entry.count += 1;
 		seen.set(key, entry);
 	}

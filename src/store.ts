@@ -8,7 +8,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync, statSync, renameSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, appendFileSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { setSha256Impl, type LlmCall, type SessionSummary, type TraceRecord } from "./types.ts";
@@ -85,26 +85,37 @@ export class TraceStore {
 		s.updatedAt = new Date().toISOString();
 	}
 
+	private flushFailed = false;
+
 	private async flush(): Promise<void> {
-		if (this.flushing) return;
+		if (this.flushing || this.flushFailed) return;
 		this.flushing = true;
 		try {
 			while (this.queue.length > 0) {
 				const batch = this.queue.splice(0, this.queue.length);
 				const lines = batch.map((r) => JSON.stringify(r)).join("\n") + "\n";
 				// Synchronous append keeps ordering guarantees; batches keep it cheap.
-				// Permissions: file created 0600 below on first write.
 				let isNew = !existsSync(this.file);
-				appendFileSync(this.file, lines, "utf8");
+				// Note 14: set restrictive mode before the first write rather than
+				// after, so the file is never world-readable even briefly.
 				if (isNew) {
 					try {
-						const { chmodSync } = await import("node:fs");
+						const { chmodSync, writeFileSync } = await import("node:fs");
+						writeFileSync(this.file, "", { mode: 0o600 });
 						chmodSync(this.file, 0o600);
+						isNew = false;
 					} catch {
 						// Windows: chmod is mostly a no-op; acceptable.
 					}
 				}
+				appendFileSync(this.file, lines, "utf8");
 			}
+		} catch (err) {
+			// A trace write must never take down the host pi process (Major 4):
+			// stop retrying and keep the failure contained.
+			this.flushFailed = true;
+			this.queue.length = 0;
+			console.error("[pi-context-viewer] trace write failed; capture disabled:", err instanceof Error ? err.message : String(err));
 		} finally {
 			this.flushing = false;
 		}
@@ -148,11 +159,51 @@ export function readTrace(sessionId: string): TraceRecord[] {
 		try {
 			records.push(JSON.parse(trimmed) as TraceRecord);
 		} catch {
-			// Torn tail write while a session is live: stop at the first bad line.
-			break;
+			// Torn tail write while a session is live: each JSONL line is
+			// self-contained, so skip the bad line and keep reading (a torn
+			// line must not permanently hide the records after it).
+			continue;
 		}
 	}
 	return records;
+}
+
+/** Fast header-only scan: reads only the first line of each trace file. */
+export function listSessionHeaders(): Array<{ sessionId: string; startedAt: string; parentSessionId?: string; isSubagent?: boolean }> {
+	const dir = traceDir();
+	if (!existsSync(dir)) return [];
+	const out: Array<{ sessionId: string; startedAt: string; parentSessionId?: string; isSubagent?: boolean }> = [];
+	for (const name of readdirSync(dir)) {
+		if (!name.endsWith(".jsonl")) continue;
+		try {
+			const first = readFirstLine(join(dir, name));
+			if (!first) continue;
+			const header = JSON.parse(first);
+			if (header?.type !== "trace_header") continue;
+			out.push({
+				sessionId: header.sessionId,
+				startedAt: header.startedAt,
+				...(header.parentSessionId ? { parentSessionId: header.parentSessionId } : {}),
+				...(header.isSubagent ? { isSubagent: true } : {}),
+			});
+		} catch {
+			// unreadable or torn first line: skip
+		}
+	}
+	return out;
+}
+
+function readFirstLine(file: string): string | undefined {
+	const fd = openSync(file, "r");
+	try {
+		const buf = Buffer.alloc(4096);
+		const n = readSync(fd, buf, 0, buf.length, 0);
+		const text = buf.toString("utf8", 0, n);
+		const idx = text.indexOf("\n");
+		return idx === -1 ? text.trim() : text.slice(0, idx);
+	} finally {
+		closeSync(fd);
+	}
 }
 
 /** List all known sessions by scanning the trace directory. */
@@ -168,7 +219,7 @@ export function listSessions(): SessionSummary[] {
 		if (!header) continue;
 		const calls = records.filter((r): r is Extract<TraceRecord, { type: "llm_call" }> => r.type === "llm_call");
 		const lastCall = calls[calls.length - 1];
-		const ended = records.some((r) => r.type === "session_end");
+		const ended = records[records.length - 1]?.type === "session_end";
 		// "active" means: no session_end AND recent file activity. A crashed or
 		// long-dead process leaves no session_end; stale traces fall back to
 		// inactive after the mtime window so the UI does not show ghosts.
@@ -206,12 +257,14 @@ export function callsFromRecords(records: TraceRecord[]): LlmCall[] {
 		.map((r) => r.call);
 }
 
-/** Highest recorded llm_call seq for a session, or -1 when none exist yet. */
-export function lastSeqFor(sessionId: string): number {
+/** Resume context for a session: last llm_call seq and prior tool-call records. */
+export function resumeContext(sessionId: string): { lastSeq: number; toolCalls: import("./types.ts").ToolCallRecord[] } {
 	const records = readTrace(sessionId);
-	let max = -1;
+	let lastSeq = -1;
+	const toolCalls: import("./types.ts").ToolCallRecord[] = [];
 	for (const r of records) {
-		if (r.type === "llm_call" && r.call.seq > max) max = r.call.seq;
+		if (r.type === "llm_call" && r.call.seq > lastSeq) lastSeq = r.call.seq;
+		if (r.type === "tool_call_started") toolCalls.push(r.call);
 	}
-	return max;
+	return { lastSeq, toolCalls };
 }

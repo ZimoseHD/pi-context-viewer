@@ -17,7 +17,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Collector } from "./collector.ts";
-import { lastSeqFor, TraceStore, traceDir, traceFileFor } from "./store.ts";
+import { resumeContext, TraceStore, traceDir, traceFileFor } from "./store.ts";
 import { createViewerServer, type ViewerServer } from "./server.ts";
 import type { SessionSummary } from "./types.ts";
 
@@ -62,9 +62,10 @@ export default function contextViewer(pi: ExtensionAPI) {
 			...(parentSessionId ? { parentSessionId } : {}),
 			...(isSubagent ? { isSubagent: true } : {}),
 		}));
+		const resumed = resumeContext(sessionId);
 		collector = new Collector(store, () => {
 			server?.notify(sessionId);
-		}, lastSeqFor(sessionId));
+		}, resumed.lastSeq, resumed.toolCalls);
 		ensureServer();
 		return store;
 	}

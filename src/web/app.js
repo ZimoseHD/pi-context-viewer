@@ -403,21 +403,26 @@ async function renderInsightsMode(viewer) {
 	wrap.className = "insights-wrap";
 
 	const section = (title, note, itemsHtml) => {
-		if (!itemsHtml) return "";
+		if (!itemsHtml) return null;
 		const sec = document.createElement("div");
 		sec.className = "insight-section";
 		sec.innerHTML = `<h3>${title}</h3><div class="detail-note">${note}</div>${itemsHtml}`;
 		return sec;
 	};
 
-	wrap.appendChild(section("重复的工具调用", "客观事实：同工具同参数出现多次（如重复读取同一文件）。",
-		ins.duplicates.map((d) => `<div class="kv"><span class="k">${esc(d.toolName)}</span><span class="v">${esc(d.signature)} ×${d.count}</span></div>`).join("")));
-	wrap.appendChild(section("工具结果在场时长", "客观事实：该结果在后续 N/M 次调用中仍存在于上下文（不构成因果判断）。",
-		ins.persistence.map((p) => `<div class="kv"><span class="k">${esc(p.toolName)}</span><span class="v">${esc(p.label)} — ${p.presentInCalls}/${p.totalCallsAfter} 次在场</span></div>`).join("")));
-	wrap.appendChild(section("大型工具结果", "客观事实：结果内容超过 50KB。",
-		ins.largeToolResults.map((l) => `<div class="kv"><span class="k">${esc(l.toolName)}</span><span class="v">${esc(l.label)} — ${(l.contentLength / 1024).toFixed(0)}KB</span></div>`).join("")));
-	wrap.appendChild(section("Compaction 影响", "客观事实：每次压缩的规模与被摘要消息数。",
-		ins.compactions.map((c) => `<div class="kv"><span class="k">${esc(c.reason)}</span><span class="v">${fmtTime(c.at)} — ${c.tokensBefore} tokens 前 · ${c.summarizedMessages} 条消息被摘要</span></div>`).join("")));
+	const sections = [
+		section("重复的工具调用", "客观事实：同工具同参数出现多次（如重复读取同一文件）。",
+			ins.duplicates.map((d) => `<div class="kv"><span class="k">${esc(d.toolName)}</span><span class="v">${esc(d.signature)} ×${d.count}</span></div>`).join("")),
+		section("工具结果在场时长", "客观事实：该结果在后续 N/M 次调用中仍存在于上下文（不构成因果判断）。",
+			ins.persistence.map((p) => `<div class="kv"><span class="k">${esc(p.toolName)}</span><span class="v">${esc(p.label)} — ${p.presentInCalls}/${p.totalCallsAfter} 次在场</span></div>`).join("")),
+		section("大型工具结果", "客观事实：结果内容超过 50KB。",
+			ins.largeToolResults.map((l) => `<div class="kv"><span class="k">${esc(l.toolName)}</span><span class="v">${esc(l.label)} — ${(l.contentLength / 1024).toFixed(0)}KB</span></div>`).join("")),
+		section("Compaction 影响", "客观事实：每次压缩的规模与被摘要消息数。",
+			ins.compactions.map((c) => `<div class="kv"><span class="k">${esc(c.reason)}</span><span class="v">${fmtTime(c.at)} — ${c.tokensBefore} tokens 前 · ${c.summarizedMessages} 条消息被摘要</span></div>`).join("")),
+	];
+	for (const sec of sections) {
+		if (sec) wrap.appendChild(sec);
+	}
 
 	if (!wrap.children.length) {
 		viewer.innerHTML = `<div class="empty">本会话暂无可计算的洞察信号。</div>`;
