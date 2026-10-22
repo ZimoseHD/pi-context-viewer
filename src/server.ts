@@ -9,6 +9,35 @@ import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { callsFromRecords, listSessionHeaders, listSessions, readTrace } from "./store.ts";
 import { diffCalls } from "./diff.ts";
+import { listSessionFiles, replaySessionCached, type ReplayedSession } from "./replay.ts";
+
+/** Resolve a session's data from live trace or session-file replay. */
+function sessionDataFor(sessionId: string): { source: "live" | "replay"; calls: import("./types.ts").LlmCall[]; toolCalls: import("./types.ts").ToolCallRecord[]; compactions: import("./types.ts").CompactionRecord[]; sessionFile?: string } | undefined {
+	// Live sidecar trace wins when present.
+	const records = readTrace(sessionId);
+	if (records.length > 0) {
+		return {
+			source: "live",
+			calls: callsFromRecords(records),
+			toolCalls: records.flatMap((r) => (r.type === "tool_call_started" ? [r.call] : [])),
+			compactions: records.flatMap((r) => (r.type === "compaction" ? [r.compaction] : [])),
+		};
+	}
+	// Historical session file replay.
+	for (const file of listSessionFiles()) {
+		if (file.sessionId !== sessionId) continue;
+		const replayed: ReplayedSession | undefined = replaySessionCached(file.sessionFile);
+		if (!replayed) continue;
+		return {
+			source: "replay",
+			calls: replayed.calls,
+			toolCalls: replayed.toolCalls,
+			compactions: replayed.compactions,
+			sessionFile: file.sessionFile,
+		};
+	}
+	return undefined;
+}
 
 const MIME: Record<string, string> = {
 	".html": "text/html; charset=utf-8",
@@ -98,19 +127,31 @@ async function handle(req: IncomingMessage, res: ServerResponse, url: URL, webDi
 	}
 
 	if (path === "/api/sessions") {
-		return json(res, listSessions());
+		// Merge live traces with historical pi session files; live wins on id
+		// collision, replay entries carry a source badge.
+		const live = listSessions();
+		const liveIds = new Set(live.map((s) => s.sessionId));
+		const liveOut = live.map((s) => ({ ...s, source: "live" as const }));
+		const replayOut = listSessionFiles()
+			.filter((f) => !liveIds.has(f.sessionId))
+			.map((f) => ({
+				sessionId: f.sessionId,
+				cwd: f.cwd,
+				sessionFile: f.sessionFile,
+				startedAt: f.startedAt,
+				updatedAt: f.updatedAt,
+				callCount: f.assistantCount,
+				source: "replay" as const,
+			}));
+		return json(res, [...liveOut, ...replayOut]);
 	}
 
 	const sessionMatch = path.match(/^\/api\/sessions\/([^/]+)$/);
 	if (sessionMatch) {
-		const records = readTrace(sessionMatch[1]);
-		if (records.length === 0) return json(res, { error: "not found" }, 404);
-		const calls = callsFromRecords(records);
-		const toolCalls = records.flatMap((r) => (r.type === "tool_call_started" ? [r.call] : []));
-		const compactions = records.flatMap((r) => (r.type === "compaction" ? [r.compaction] : []));
+		const data = sessionDataFor(sessionMatch[1]);
+		if (!data) return json(res, { error: "not found" }, 404);
+		const { calls, toolCalls, compactions, source } = data;
 		// Subagent children: sessions whose trace header points at this one.
-		// Header-only fast scan (first line of each file) to avoid re-reading
-		// every full trace on each request.
 		const children = listSessionHeaders()
 			.filter((s) => s.parentSessionId === sessionMatch[1])
 			.map((s) => ({ sessionId: s.sessionId, startedAt: s.startedAt, isSubagent: s.isSubagent }));
@@ -124,37 +165,35 @@ async function handle(req: IncomingMessage, res: ServerResponse, url: URL, webDi
 			toolCalls,
 			compactions,
 			children,
+			source,
 		});
 	}
 
 	const tokensMatch = path.match(/^\/api\/sessions\/([^/]+)\/tokens$/);
 	if (tokensMatch) {
-		const records = readTrace(tokensMatch[1]);
-		const calls = callsFromRecords(records);
-		if (calls.length === 0) return json(res, { error: "not found" }, 404);
-		return json(res, tokenBreakdown(calls));
+		const data = sessionDataFor(tokensMatch[1]);
+		if (!data || data.calls.length === 0) return json(res, { error: "not found" }, 404);
+		return json(res, tokenBreakdown(data.calls));
 	}
 
 	const insightsMatch = path.match(/^\/api\/sessions\/([^/]+)\/insights$/);
 	if (insightsMatch) {
-		const records = readTrace(insightsMatch[1]);
-		if (records.length === 0) return json(res, { error: "not found" }, 404);
-		return json(res, buildInsights(records));
+		const data = sessionDataFor(insightsMatch[1]);
+		if (!data) return json(res, { error: "not found" }, 404);
+		return json(res, buildInsightsFrom(data));
 	}
 
 	const callMatch = path.match(/^\/api\/sessions\/([^/]+)\/calls\/(\d+)$/);
 	if (callMatch) {
-		const records = readTrace(callMatch[1]);
-		const calls = callsFromRecords(records);
-		const call = calls.find((c) => c.seq === Number(callMatch[2]));
+		const data = sessionDataFor(callMatch[1]);
+		const call = data?.calls.find((c) => c.seq === Number(callMatch[2]));
 		if (!call) return json(res, { error: "not found" }, 404);
 		return json(res, call);
 	}
 
 	const diffMatch = path.match(/^\/api\/sessions\/([^/]+)\/diff\/(\d+)(?:\/(\d+))?$/);
 	if (diffMatch) {
-		const records = readTrace(diffMatch[1]);
-		const calls = callsFromRecords(records);
+		const calls = sessionDataFor(diffMatch[1])?.calls ?? [];
 		const bSeq = Number(diffMatch[2]);
 		const aSeq = Number(diffMatch[3] ?? bSeq - 1);
 		const bCall = calls.find((c) => c.seq === bSeq);
@@ -275,15 +314,24 @@ function tokenBreakdown(calls: LlmCall[]): {
  * - compaction impact
  * No causal claims: presence counts are facts, relevance is not inferred.
  */
-function buildInsights(records: import("./types.ts").TraceRecord[]): {
+function buildInsightsFrom(data: {
+	calls: import("./types.ts").LlmCall[];
+	toolCalls: import("./types.ts").ToolCallRecord[];
+	compactions: import("./types.ts").CompactionRecord[];
+}): {
 	duplicates: Array<{ toolName: string; signature: string; count: number; kind: string }>;
 	persistence: Array<{ toolName: string; label: string; presentInCalls: number; totalCallsAfter: number }>;
 	largeToolResults: Array<{ toolName: string; label: string; contentLength: number }>;
 	compactions: Array<{ reason: string; tokensBefore: number; summarizedMessages: number; at: string }>;
 } {
-	const calls = callsFromRecords(records);
-	const toolCalls = records.flatMap((r) => (r.type === "tool_call_started" ? [r.call] : []));
-	const toolFinished = new Map(records.flatMap((r) => (r.type === "tool_call_finished" ? [[r.toolCallId, r] as const] : [])));
+	const calls = data.calls;
+	const toolCalls = data.toolCalls;
+	const compactionImpact = data.compactions.map((c) => ({
+		reason: c.reason,
+		tokensBefore: c.tokensBefore,
+		summarizedMessages: c.summarizedRoles.length,
+		at: c.at,
+	}));
 
 	// 1. Duplicate tool calls by (toolName, full input). Pagination parameters
 	// (offset/limit) are part of the signature: paging through a file is not a
@@ -317,32 +365,19 @@ function buildInsights(records: import("./types.ts").TraceRecord[]): {
 	}
 	persistence.sort((a, b) => b.presentInCalls - a.presentInCalls);
 
-	// 3. Large tool results (contentLength from the finished record).
-	const largeToolResults = [];
+	// 3. Large tool results (contentLength lives on the tool call record).
+	const largeToolResults: Array<{ toolName: string; label: string; contentLength: number }> = [];
 	for (const tc of toolCalls) {
-		const fin = toolFinished.get(tc.toolCallId);
-		if (fin && fin.contentLength > 50_000) {
+		if ((tc.contentLength ?? 0) > 50_000) {
 			const input = tc.input as any;
 			largeToolResults.push({
 				toolName: tc.toolName,
 				label: typeof input?.path === "string" ? input.path : typeof input?.command === "string" ? input.command : tc.toolName,
-				contentLength: fin.contentLength,
+				contentLength: tc.contentLength ?? 0,
 			});
 		}
 	}
 	largeToolResults.sort((a, b) => b.contentLength - a.contentLength);
 
-	// 4. Compaction impact.
-	const compactions = records.flatMap((r) =>
-		r.type === "compaction"
-			? [{
-					reason: r.compaction.reason,
-					tokensBefore: r.compaction.tokensBefore,
-					summarizedMessages: r.compaction.summarizedRoles.length,
-					at: r.compaction.at,
-				}]
-			: [],
-	);
-
-	return { duplicates, persistence, largeToolResults, compactions };
+	return { duplicates, persistence, largeToolResults, compactions: compactionImpact };
 }
