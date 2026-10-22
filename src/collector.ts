@@ -134,9 +134,10 @@ export class Collector {
 	private activeCallToolCalls: string[] = [];
 	private onEvent?: () => void;
 
-	constructor(store: TraceStore, onEvent?: () => void) {
+	constructor(store: TraceStore, onEvent?: () => void, startSeq = -1) {
 		this.store = store;
 		this.onEvent = onEvent;
+		this.seq = startSeq + 1;
 	}
 
 	private emit(): void {

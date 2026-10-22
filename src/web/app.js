@@ -241,7 +241,12 @@ async function renderViewer() {
 	const mode = state.mode;
 	$("#diff-controls").classList.toggle("hidden", mode !== "diff");
 
-	if (!state.sessionData || state.selectedSeq == null) {
+	if (!state.sessionData) {
+		viewer.innerHTML = `<div class="empty">选择左侧任意一个会话。</div>`;
+		$("#detail").innerHTML = "";
+		return;
+	}
+	if (state.selectedSeq == null && mode !== "tokens" && mode !== "insights") {
 		viewer.innerHTML = `<div class="empty">选择左侧任意一次 LLM 调用。</div>`;
 		$("#detail").innerHTML = "";
 		return;
@@ -249,7 +254,9 @@ async function renderViewer() {
 
 	if (mode === "view") await renderContextMode(viewer);
 	else if (mode === "diff") await renderDiffMode(viewer);
-	else await renderPayloadMode(viewer);
+	else if (mode === "payload") await renderPayloadMode(viewer);
+	else if (mode === "tokens") await renderTokensMode(viewer);
+	else await renderInsightsMode(viewer);
 }
 
 async function renderContextMode(viewer) {
@@ -334,6 +341,93 @@ function renderMessage(m, idx, opts = {}) {
 	return el;
 }
 
+const DISPLAY_CAP = 100_000;
+
+/** Cap huge text for smooth rendering; full text stays available via the API. */
+function renderCappedText(text) {
+	if (text.length <= DISPLAY_CAP) return highlight(text, state.search);
+	return highlight(text.slice(0, DISPLAY_CAP), state.search) +
+		`\n… [已截断显示前 ${DISPLAY_CAP} 字符 / 共 ${text.length} 字符，完整内容通过 API 可取]`;
+}
+
+// ---------- viewer: tokens mode ----------
+
+async function renderTokensMode(viewer) {
+	const t = await api(`/api/sessions/${state.sessionId}/tokens`);
+	viewer.innerHTML = "";
+	const wrap = document.createElement("div");
+	wrap.className = "tokens-wrap";
+	const note = document.createElement("div");
+	note.className = "detail-note";
+	note.innerHTML = `按角色/来源的估算值 = 字符数/4（标 ≈）；provider 数值为真实 usage。估算仅用于构成比例参考。`;
+	wrap.appendChild(note);
+
+	const table = document.createElement("table");
+	table.className = "tokens-table";
+	table.innerHTML = `
+		<thead><tr><th>#</th><th>provider input</th><th>output</th><th>pi 估算</th><th>角色构成（估算）</th></tr></thead>
+		<tbody>${t.perCall.map((c) => `
+			<tr class="tokens-row" data-seq="${c.seq}">
+				<td>#${c.seq}</td>
+				<td>${c.providerInput ?? "—"}</td>
+				<td>${c.providerOutput ?? "—"}</td>
+				<td class="estimate">${c.piEstimate ?? "—"}</td>
+				<td>${c.byRole.map((r) => `${esc(r.role)} ${fmtTokens(r.estimate)}≈`).join(" · ")}</td>
+			</tr>`).join("")}
+		</tbody>`;
+	wrap.appendChild(table);
+
+	const totals = document.createElement("div");
+	totals.className = "tokens-totals";
+	totals.innerHTML = `<h3>全部调用累计（估算口径）</h3>
+		<div>按角色：${t.totals.byRole.map((r) => `${esc(r.key)} ${fmtTokens(r.estimate)}≈`).join(" · ")}</div>
+		<div>按来源：${t.totals.byProvenance.map((r) => `${esc(r.key)} ${fmtTokens(r.estimate)}≈`).join(" · ")}</div>`;
+	wrap.appendChild(totals);
+	viewer.appendChild(wrap);
+	viewer.querySelectorAll(".tokens-row").forEach((row) => {
+		row.onclick = () => {
+			document.querySelector('[data-mode="view"]').click();
+			selectCall(Number(row.dataset.seq));
+		};
+	});
+	renderDetailForCall(null, {});
+	$("#detail").innerHTML = `<h3>Tokens 模式</h3><div class="note">provider = 真实 usage；≈ = 字符/4 估算。点击行跳转对应调用。</div>`;
+}
+
+// ---------- viewer: insights mode ----------
+
+async function renderInsightsMode(viewer) {
+	const ins = await api(`/api/sessions/${state.sessionId}/insights`);
+	viewer.innerHTML = "";
+	const wrap = document.createElement("div");
+	wrap.className = "insights-wrap";
+
+	const section = (title, note, itemsHtml) => {
+		if (!itemsHtml) return "";
+		const sec = document.createElement("div");
+		sec.className = "insight-section";
+		sec.innerHTML = `<h3>${title}</h3><div class="detail-note">${note}</div>${itemsHtml}`;
+		return sec;
+	};
+
+	wrap.appendChild(section("重复的工具调用", "客观事实：同工具同参数出现多次（如重复读取同一文件）。",
+		ins.duplicates.map((d) => `<div class="kv"><span class="k">${esc(d.toolName)}</span><span class="v">${esc(d.signature)} ×${d.count}</span></div>`).join("")));
+	wrap.appendChild(section("工具结果在场时长", "客观事实：该结果在后续 N/M 次调用中仍存在于上下文（不构成因果判断）。",
+		ins.persistence.map((p) => `<div class="kv"><span class="k">${esc(p.toolName)}</span><span class="v">${esc(p.label)} — ${p.presentInCalls}/${p.totalCallsAfter} 次在场</span></div>`).join("")));
+	wrap.appendChild(section("大型工具结果", "客观事实：结果内容超过 50KB。",
+		ins.largeToolResults.map((l) => `<div class="kv"><span class="k">${esc(l.toolName)}</span><span class="v">${esc(l.label)} — ${(l.contentLength / 1024).toFixed(0)}KB</span></div>`).join("")));
+	wrap.appendChild(section("Compaction 影响", "客观事实：每次压缩的规模与被摘要消息数。",
+		ins.compactions.map((c) => `<div class="kv"><span class="k">${esc(c.reason)}</span><span class="v">${fmtTime(c.at)} — ${c.tokensBefore} tokens 前 · ${c.summarizedMessages} 条消息被摘要</span></div>`).join("")));
+
+	if (!wrap.children.length) {
+		viewer.innerHTML = `<div class="empty">本会话暂无可计算的洞察信号。</div>`;
+		return;
+	}
+	viewer.appendChild(wrap);
+	renderDetailForCall(null, {});
+	$("#detail").innerHTML = `<h3>Insights 模式</h3><div class="note">全部条目基于 trace 事件的可验证计数；"是否相关/是否影响行为"属推测，不在事实列表中断言。</div>`;
+}
+
 // ---------- viewer: diff mode ----------
 
 async function renderDiffMode(viewer) {
@@ -368,6 +462,18 @@ async function renderDiffMode(viewer) {
 		if (diff.toolChanges.added.length) parts.push(`+ tools: ${diff.toolChanges.added.join(", ")}`);
 		if (diff.toolChanges.removed.length) parts.push(`− tools: ${diff.toolChanges.removed.join(", ")}`);
 		row.innerHTML = `<span class="op-badge changed">tools</span> ${esc(parts.join(" · "))}`;
+		viewer.appendChild(row);
+	}
+	if (diff.payloadChanges && (diff.payloadChanges.systemChanged || diff.payloadChanges.toolsAdded.length || diff.payloadChanges.toolsRemoved.length)) {
+		const pc = diff.payloadChanges;
+		const row = document.createElement("div");
+		row.className = "section-change-row";
+		const parts = [];
+		if (pc.systemChanged) parts.push("system 文本变化");
+		if (pc.toolsAdded.length) parts.push(`payload tools +: ${pc.toolsAdded.join(", ")}`);
+		if (pc.toolsRemoved.length) parts.push(`payload tools −: ${pc.toolsRemoved.join(", ")}`);
+		if (pc.messageCountDelta != null) parts.push(`payload messages ${pc.messageCountDelta >= 0 ? "+" : ""}${pc.messageCountDelta}`);
+		row.innerHTML = `<span class="op-badge changed" style="color: var(--cyan)">payload</span> ${esc(parts.join(" · "))}`;
 		viewer.appendChild(row);
 	}
 
@@ -567,6 +673,14 @@ function renderDetailForCall(call, opts = {}) {
 		}
 	}
 
+	if (state.sessionData?.children?.length) {
+		parts.push(`<h3>Subagent 子会话</h3>`);
+		for (const ch of state.sessionData.children) {
+			parts.push(`<div class="kv"><span class="k">${esc(ch.sessionId.slice(0, 8))}</span><span class="v"><a href="#" class="child-link" data-sid="${esc(ch.sessionId)}">${ch.callCount} calls · 查看 →</a></span></div>`);
+		}
+		parts.push(`<div class="note">父子关系来自子进程环境变量（确定性）；对应哪次 subagent 工具调用按时间推断。</div>`);
+	}
+
 	if (opts.diff) {
 		const d = opts.diff;
 		parts.push(`<h3>Diff 概览</h3>`);
@@ -633,5 +747,13 @@ $("#search").oninput = () => {
 };
 
 $("#refresh-sessions").onclick = loadSessions;
+
+document.addEventListener("click", (ev) => {
+	const link = ev.target.closest?.(".child-link");
+	if (link) {
+		ev.preventDefault();
+		selectSession(link.dataset.sid);
+	}
+});
 
 loadSessions();

@@ -52,7 +52,12 @@ export class TraceStore {
 			// ignore; mkdirSync above already created it
 		}
 		this.summaryCache = seed(this);
-		this.append({ type: "trace_header", ...headerFields(this.summaryCache) });
+		if (!existsSync(this.file)) {
+			// New trace; the header is written once per file.
+			this.append({ type: "trace_header", ...headerFields(this.summaryCache) });
+		}
+		// A resumed session (same --session-id in a later pi process) continues
+		// the existing file: llm_call seq numbers continue from the last one.
 	}
 
 	/** Append a record; disk write happens asynchronously. */
@@ -112,9 +117,11 @@ export class TraceStore {
 
 	close(reason: string): void {
 		if (this.closed) return;
-		this.closed = true;
+		// Append the end record before flipping the guard: append() refuses
+		// writes once closed.
 		this.append({ type: "session_end", at: new Date().toISOString(), reason });
-	}
+		this.closed = true;
+}
 }
 
 function headerFields(s: SessionSummary) {
@@ -162,6 +169,17 @@ export function listSessions(): SessionSummary[] {
 		const calls = records.filter((r): r is Extract<TraceRecord, { type: "llm_call" }> => r.type === "llm_call");
 		const lastCall = calls[calls.length - 1];
 		const ended = records.some((r) => r.type === "session_end");
+		// "active" means: no session_end AND recent file activity. A crashed or
+		// long-dead process leaves no session_end; stale traces fall back to
+		// inactive after the mtime window so the UI does not show ghosts.
+		let active = !ended;
+		if (active) {
+			try {
+				active = Date.now() - statSync(join(dir, name)).mtimeMs < 15 * 60_000;
+			} catch {
+				active = false;
+			}
+		}
 		summaries.push({
 			sessionId,
 			cwd: header.cwd,
@@ -174,7 +192,7 @@ export function listSessions(): SessionSummary[] {
 			lastModel: lastCall?.call.model,
 			parentSessionId: header.parentSessionId,
 			isSubagent: header.isSubagent,
-			active: !ended,
+			active,
 		});
 	}
 	summaries.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
@@ -186,4 +204,14 @@ export function callsFromRecords(records: TraceRecord[]): LlmCall[] {
 	return records
 		.filter((r): r is Extract<TraceRecord, { type: "llm_call" }> => r.type === "llm_call")
 		.map((r) => r.call);
+}
+
+/** Highest recorded llm_call seq for a session, or -1 when none exist yet. */
+export function lastSeqFor(sessionId: string): number {
+	const records = readTrace(sessionId);
+	let max = -1;
+	for (const r of records) {
+		if (r.type === "llm_call" && r.call.seq > max) max = r.call.seq;
+	}
+	return max;
 }
