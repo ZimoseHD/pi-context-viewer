@@ -241,3 +241,24 @@ mark { background: #4d3d00; color: #ffe08a; border-radius: 2px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
 ::-webkit-scrollbar-thumb:hover { background: #3a4454; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- tokens / insights modes ---------- */
+.tokens-wrap, .insights-wrap { padding: 14px 18px; }
+.detail-note { font-size: 11px; color: var(--fg-dim); font-style: italic; margin-bottom: 10px; }
+.tokens-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.tokens-table th {
+	text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+	color: var(--fg-dim); padding: 4px 8px; border-bottom: 1px solid var(--border);
+	font-family: var(--mono); font-weight: 600;
+}
+.tokens-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); font-family: var(--mono); }
+.tokens-row { cursor: pointer; }
+.tokens-row:hover { background: var(--bg-raised); }
+.tokens-totals { margin-top: 18px; font-size: 12px; }
+.tokens-totals h3 { font-size: 11px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.tokens-totals div { margin: 4px 0; word-break: break-all; }
+.insight-section { margin-bottom: 20px; }
+.insight-section h3 { font-size: 12px; color: var(--accent); margin: 0 0 2px; }
+.insight-section .kv { font-size: 12px; }
+.child-link { color: var(--cyan); text-decoration: none; }
+.child-link:hover { text-decoration: underline; }

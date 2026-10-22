@@ -104,7 +104,11 @@ function provenanceFor(message: any, toolCalls: Map<string, ToolCallRecord>): Pr
 }
 
 function toAgentMessageRecord(message: any, toolCalls: Map<string, ToolCallRecord>): AgentMessageRecord {
-	const record: AgentMessageRecord = { role: message.role, content: message.content };
+	// compactionSummary/branchSummary carry `summary`, not `content` (pi message
+	// types); store it as content so viewers and diffs see the real text.
+	const content =
+		message.content !== undefined ? message.content : message.summary !== undefined ? message.summary : undefined;
+	const record: AgentMessageRecord = { role: message.role, content };
 	if (message.role === "system") {
 		if (message.sections) record.sections = message.sections;
 		if (Array.isArray(message.toolsAdded)) {
@@ -134,9 +138,13 @@ export class Collector {
 	private activeCallToolCalls: string[] = [];
 	private onEvent?: () => void;
 
-	constructor(store: TraceStore, onEvent?: () => void) {
+	constructor(store: TraceStore, onEvent?: () => void, startSeq = -1, priorToolCalls: ToolCallRecord[] = []) {
 		this.store = store;
 		this.onEvent = onEvent;
+		this.seq = startSeq + 1;
+		// Resumed sessions keep provenance for tool results recorded before the
+		// process restarted.
+		for (const tc of priorToolCalls) this.toolCalls.set(tc.toolCallId, tc);
 	}
 
 	private emit(): void {

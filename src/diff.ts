@@ -170,9 +170,13 @@ export function diffCalls(a: LlmCall | undefined, b: LlmCall): MessageDiff {
 	const ops: DiffOp[] = [];
 	const aMessages = a?.piContext ?? [];
 	const bMessages = b.piContext;
-
 	const bHasCompaction = bMessages.some((m) => m.role === "compactionSummary");
-	const compactionBoundary = Boolean(a) && bHasCompaction && !(a?.piContext ?? []).some((m) => m.role === "compactionSummary");
+	// A compaction boundary exists when B carries a compactionSummary that A did
+	// not have — including a second compaction, where the previous summary was
+	// itself summarized into the new one (content differs).
+	const aSummary = (a?.piContext ?? []).find((m) => m.role === "compactionSummary");
+	const bSummary = bMessages.find((m) => m.role === "compactionSummary");
+	const compactionBoundary = Boolean(a) && bHasCompaction && JSON.stringify(aSummary?.content ?? null) !== JSON.stringify(bSummary?.content ?? null);
 
 	// Index A by stable key; keep duplicates possible per key rare.
 	const aIndex = new Map<string, number[]>();
