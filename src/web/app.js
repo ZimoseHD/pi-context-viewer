@@ -112,13 +112,14 @@ function renderSessions() {
 		const tags = [
 			s.active ? `<span class="tag active">live</span>` : "",
 			s.isSubagent ? `<span class="tag subagent">subagent</span>` : "",
+			s.source === "replay" ? `<span class="tag replay">回放</span>` : "",
 		].join("");
 		const shortId = s.sessionId.slice(0, 8);
 		const modelName = s.lastModel ? s.lastModel.id.split("/").pop() : "";
 		el.innerHTML = `
 			<div class="sid">${shortId}${tags}</div>
 			<div class="meta">${esc(s.cwd.split("/").pop() || s.cwd)} · ${s.callCount} calls · ${esc(modelName)}</div>
-			<div class="meta">${fmtTime(s.updatedAt)}</div>`;
+			<div class="meta">${fmtTime(s.updatedAt)}${s.source === "replay" ? " · 历史会话回放" : ""}</div>`;
 		el.onclick = () => selectSession(s.sessionId);
 		list.appendChild(el);
 	}
@@ -605,8 +606,11 @@ function toolCallBlock(toolCallId) {
 async function renderPayloadMode(viewer) {
 	const call = await api(`/api/sessions/${state.sessionId}/calls/${state.selectedSeq}`);
 	viewer.innerHTML = "";
+	const isReplay = state.sessionData?.source === "replay";
 	if (!call.providerPayloads?.length) {
-		viewer.innerHTML = `<div class="empty">该调用未捕获 Provider Payload（例如 compaction 的摘要请求不走 agent 钩子）。</div>`;
+		viewer.innerHTML = isReplay
+			? `<div class="empty">历史会话（session 文件回放）：Provider Payload 未存储在 session 文件中，不可恢复。<br>上下文重建见 Context 视图（captureLevel: session_replay）。</div>`
+			: `<div class="empty">该调用未捕获 Provider Payload（例如 compaction 的摘要请求不走 agent 钩子）。</div>`;
 	} else {
 		for (const p of call.providerPayloads) {
 			const el = document.createElement("div");
@@ -653,8 +657,13 @@ function renderDetailForCall(call, opts) {
 	parts.push(`<div class="kv"><span class="k">时间</span><span class="v">${fmtTime(call.startedAt)}</span></div>`);
 
 	parts.push(`<h3>捕获层级</h3>`);
-	parts.push(`<div class="note">Context 视图 = <code>context_with_system</code>（Pi 内部最终上下文，含 system）</div>`);
-	parts.push(`<div class="note">Payload 视图 = <code>before_provider_request</code>（最终发送体）</div>`);
+	if (state.sessionData?.source === "replay") {
+		parts.push(`<div class="note">历史回放：从 Pi session JSONL 按 <code>buildContextEntries</code> 语义重建的模型可见上下文</div>`);
+		parts.push(`<div class="note">Provider Payload 与 pi 实时估算不可恢复（session 文件未存储）</div>`);
+	} else {
+		parts.push(`<div class="note">Context 视图 = <code>context_with_system</code>（Pi 内部最终上下文，含 system）</div>`);
+		parts.push(`<div class="note">Payload 视图 = <code>before_provider_request</code>（最终发送体）</div>`);
+	}
 
 	parts.push(`<h3>Tokens</h3>`);
 	if (call.providerInputTokens != null) {

@@ -262,3 +262,4 @@ mark { background: #4d3d00; color: #ffe08a; border-radius: 2px; }
 .insight-section .kv { font-size: 12px; }
 .child-link { color: var(--cyan); text-decoration: none; }
 .child-link:hover { text-decoration: underline; }
+.tag.replay { background: #14303d; color: var(--cyan); }
