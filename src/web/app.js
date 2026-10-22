@@ -637,7 +637,8 @@ async function renderPayloadMode(viewer) {
 
 // ---------- detail pane ----------
 
-function renderDetailForCall(call, opts = {}) {
+function renderDetailForCall(call, opts) {
+	opts = opts ?? {};
 	const detail = $("#detail");
 	if (!call) {
 		detail.innerHTML = "";
@@ -681,7 +682,7 @@ function renderDetailForCall(call, opts = {}) {
 	if (state.sessionData?.children?.length) {
 		parts.push(`<h3>Subagent 子会话</h3>`);
 		for (const ch of state.sessionData.children) {
-			parts.push(`<div class="kv"><span class="k">${esc(ch.sessionId.slice(0, 8))}</span><span class="v"><a href="#" class="child-link" data-sid="${esc(ch.sessionId)}">${ch.callCount} calls · 查看 →</a></span></div>`);
+			parts.push(`<div class="kv"><span class="k">${esc(ch.sessionId.slice(0, 8))}</span><span class="v"><a href="#" class="child-link" data-sid="${esc(ch.sessionId)}">${fmtTime(ch.startedAt)} · 查看 →</a></span></div>`);
 		}
 		parts.push(`<div class="note">父子关系来自子进程环境变量（确定性）；对应哪次 subagent 工具调用按时间推断。</div>`);
 	}
