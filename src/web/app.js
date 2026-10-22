@@ -146,9 +146,17 @@ async function loadSession() {
 	state.sessionData = data;
 	renderTimeline();
 	renderSessionMeta();
-	if (state.selectedSeq == null) {
+	// The session may have changed underneath us (resume, SSE reconnect to a
+	// different process, branch switch): drop a selectedSeq that no longer
+	// exists instead of requesting it forever.
+	const exists = data.calls.some((c) => c.seq === state.selectedSeq);
+	if (state.selectedSeq == null || !exists) {
+		state.selectedSeq = null;
+		state.diffA = null;
+		state.diffB = null;
 		const last = data.calls[data.calls.length - 1];
 		if (last) selectCall(last.seq, { keepDiff: true });
+		else renderViewer();
 	} else {
 		selectCall(state.selectedSeq, { keepDiff: true });
 	}
@@ -253,11 +261,16 @@ async function renderViewer() {
 		return;
 	}
 
-	if (mode === "view") await renderContextMode(viewer);
-	else if (mode === "diff") await renderDiffMode(viewer);
-	else if (mode === "payload") await renderPayloadMode(viewer);
-	else if (mode === "tokens") await renderTokensMode(viewer);
-	else await renderInsightsMode(viewer);
+	try {
+		if (mode === "view") await renderContextMode(viewer);
+		else if (mode === "diff") await renderDiffMode(viewer);
+		else if (mode === "payload") await renderPayloadMode(viewer);
+		else if (mode === "tokens") await renderTokensMode(viewer);
+		else await renderInsightsMode(viewer);
+	} catch (err) {
+		viewer.innerHTML = `<div class="empty">加载失败：${esc(String(err?.message ?? err))}<br>该调用可能已被会话切换/压缩移除，请重新选择。</div>`;
+		$("#detail").innerHTML = "";
+	}
 }
 
 async function renderContextMode(viewer) {
